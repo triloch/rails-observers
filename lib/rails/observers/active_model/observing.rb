@@ -14,7 +14,12 @@ module ActiveModel
 
     included do
       extend ActiveSupport::DescendantsTracker
+      def self.inherited(subclass)
+        super
+        ActiveRecord::Base.instantiate_observers
+      end
     end
+
 
     module ClassMethods
       # Activates the observers assigned.
@@ -74,7 +79,7 @@ module ActiveModel
       #
       #   Foo.observer_instances # => [#<FooObserver:0x007fc212c40820>]
       def observer_instances
-        @observer_instances ||= []
+        @observer_instances ||= Set.new
       end
 
       # Instantiate the global observers.
@@ -293,10 +298,22 @@ module ActiveModel
   # sure to read about the necessary configuration in the documentation for
   # ActiveRecord::Observer.
   class Observer
-    include Singleton
     extend ActiveSupport::DescendantsTracker
-
     class << self
+
+      # Provides simplistic, singleton-like functionality for
+      # this class.
+      #
+      # Will only instantiate a new object upon first invocation.
+      # Thereafter, returns previous object.
+      #
+      def instance
+        @instance ||= new
+        @instance.send(:add_observers!)
+        @instance
+      end
+      protected :new, :allocate
+
       # Attaches the observer to the supplied model classes.
       #
       #   class AuditObserver < ActiveModel::Observer
@@ -322,7 +339,7 @@ module ActiveModel
       #     end
       #   end
       def observed_classes
-        Array(observed_class)
+        Array(observed_class).compact
       end
 
       # Returns the class observed by default. It's inferred from the observer's
@@ -331,14 +348,18 @@ module ActiveModel
       #   PersonObserver.observed_class  # => Person
       #   AccountObserver.observed_class # => Account
       def observed_class
-        name[/(.*)Observer/, 1].try :constantize
+        return nil unless observed_class_loaded?
+        observed_class_name.try(:constantize)
       end
-    end
 
-    # Start observing the declared classes and their subclasses.
-    # Called automatically by the instance method.
-    def initialize #:nodoc:
-      observed_classes.each { |klass| add_observer!(klass) }
+      def observed_class_name #:nodoc:
+        name[/(.*)Observer/, 1]
+      end
+
+      def observed_class_loaded? #:nodoc:
+        return nil if observed_class_name.blank?
+        ActiveSupport::Dependencies.qualified_const_defined?(observed_class_name)
+      end
     end
 
     def observed_classes #:nodoc:
@@ -360,6 +381,10 @@ module ActiveModel
     end
 
     protected
+      def add_observers! #:nodoc:
+        observed_classes.each { |klass| add_observer!(klass) }
+      end
+
       def add_observer!(klass) #:nodoc:
         klass.add_observer(self)
       end
